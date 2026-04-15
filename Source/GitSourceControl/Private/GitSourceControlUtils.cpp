@@ -1689,18 +1689,16 @@ bool UpdateChangelistStateByCommand()
 		UE_LOG(LogSourceControl, Warning, TEXT("GitSourceControl module is not loaded."));
 		return false;
 	}
-	
+
 	FGitSourceControlModule& GitSourceControl = FModuleManager::GetModuleChecked<FGitSourceControlModule>("GitSourceControl");
 	FGitSourceControlProvider& Provider = GitSourceControl.GetProvider();
 	if (!Provider.IsGitAvailable())
 	{
 		return false;
 	}
-	TSharedRef<FGitSourceControlChangelistState, ESPMode::ThreadSafe> StagedChangelist = Provider.GetStateInternal(FGitSourceControlChangelist::StagedChangelist);
-	TSharedRef<FGitSourceControlChangelistState, ESPMode::ThreadSafe> WorkingChangelist = Provider.GetStateInternal(FGitSourceControlChangelist::WorkingChangelist);
-	StagedChangelist->Files.RemoveAll([](const FSourceControlStateRef& InState){ return true; });
-	WorkingChangelist->Files.RemoveAll([](const FSourceControlStateRef& InState){ return true; });
 
+	// Run git status off-thread (safe), then mutate state cache on the game thread to avoid
+	// races with GetStateInternal / changelist Files TArray concurrent access.
 	TArray<FString> Files;
 	Files.Add(TEXT("Content/"));
 	TArray<FString> Parameters;
@@ -1708,26 +1706,64 @@ bool UpdateChangelistStateByCommand()
 	TArray<FString> Results;
 	TArray<FString> ErrorMsg;
 	const bool bResult = RunCommand(TEXT("--no-optional-locks status"), Provider.GetGitBinaryPath(), Provider.GetPathToRepositoryRoot(), Parameters, Files, Results, ErrorMsg);
-	for (const auto& Result : Results)
+	if (!bResult)
 	{
-		FString File = GetFullPathFromGitStatus(Result, Provider.GetPathToRepositoryRoot());
-		TSharedRef<FGitSourceControlState, ESPMode::ThreadSafe> State = Provider.GetStateInternal(File);
-		// Staged check
-		if (!TChar<TCHAR>::IsWhitespace(Result[0]))
+		return false;
+	}
+
+	const FString RepoRoot = Provider.GetPathToRepositoryRoot();
+
+	TUniqueFunction<void()> ApplyFunc = [Results, RepoRoot]()
+	{
+		FGitSourceControlModule* GitModulePtr = FGitSourceControlModule::GetThreadSafe();
+		if (!GitModulePtr)
 		{
-			WorkingChangelist->Files.Remove(State);
-			UpdateFileStagingOnSavedInternal(Result);
-			State->Changelist = FGitSourceControlChangelist::StagedChangelist;
-			StagedChangelist->Files.AddUnique(State);
-			continue;
+			return;
 		}
-		// Working check
-		if (!TChar<TCHAR>::IsWhitespace(Result[1]))
+		FGitSourceControlProvider& Prov = GitModulePtr->GetProvider();
+		if (!Prov.IsGitAvailable())
 		{
-			StagedChangelist->Files.Remove(State);
-			State->Changelist = FGitSourceControlChangelist::WorkingChangelist;
-			WorkingChangelist->Files.AddUnique(State);
+			return;
 		}
+		TSharedRef<FGitSourceControlChangelistState, ESPMode::ThreadSafe> StagedChangelist = Prov.GetStateInternal(FGitSourceControlChangelist::StagedChangelist);
+		TSharedRef<FGitSourceControlChangelistState, ESPMode::ThreadSafe> WorkingChangelist = Prov.GetStateInternal(FGitSourceControlChangelist::WorkingChangelist);
+		StagedChangelist->Files.RemoveAll([](const FSourceControlStateRef& InState){ return true; });
+		WorkingChangelist->Files.RemoveAll([](const FSourceControlStateRef& InState){ return true; });
+
+		for (const FString& Result : Results)
+		{
+			if (Result.Len() < 2)
+			{
+				continue;
+			}
+			FString File = GetFullPathFromGitStatus(Result, RepoRoot);
+			TSharedRef<FGitSourceControlState, ESPMode::ThreadSafe> State = Prov.GetStateInternal(File);
+			// Staged check
+			if (!TChar<TCHAR>::IsWhitespace(Result[0]))
+			{
+				WorkingChangelist->Files.Remove(State);
+				UpdateFileStagingOnSavedInternal(Result);
+				State->Changelist = FGitSourceControlChangelist::StagedChangelist;
+				StagedChangelist->Files.AddUnique(State);
+				continue;
+			}
+			// Working check
+			if (!TChar<TCHAR>::IsWhitespace(Result[1]))
+			{
+				StagedChangelist->Files.Remove(State);
+				State->Changelist = FGitSourceControlChangelist::WorkingChangelist;
+				WorkingChangelist->Files.AddUnique(State);
+			}
+		}
+	};
+
+	if (IsInGameThread())
+	{
+		ApplyFunc();
+	}
+	else
+	{
+		AsyncTask(ENamedThreads::GameThread, MoveTemp(ApplyFunc));
 	}
 	return true;
 }
