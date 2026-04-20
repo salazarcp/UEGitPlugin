@@ -889,7 +889,46 @@ bool RunLFSCommand(const FString& InCommand, const FString& InRepositoryRoot, co
 	Command = TEXT("lfs ") + Command;
 #endif
 
-	return GitSourceControlUtils::RunCommand(Command, LFSLockBinary, InRepositoryRoot, InParameters, InFiles, OutResults, OutErrorMessages);
+	bool bSuccess = GitSourceControlUtils::RunCommand(Command, LFSLockBinary, InRepositoryRoot, InParameters, InFiles, OutResults, OutErrorMessages);
+
+	// Self-heal: detect corrupt LFS lock cache and auto-recover.
+	// The error looks like:
+	//   "Unable to create lock system: lock cache initialization: problem reading updated key/value data from .../lockcache.db: gob: ..."
+	// When this happens, the only fix is deleting the cache file and retrying.
+	if (!bSuccess)
+	{
+		bool bCacheCorrupt = false;
+		for (const FString& Err : OutErrorMessages)
+		{
+			if (Err.Contains(TEXT("lock cache initialization")) || Err.Contains(TEXT("lockcache.db")))
+			{
+				bCacheCorrupt = true;
+				break;
+			}
+		}
+
+		if (bCacheCorrupt)
+		{
+			const FString LockCachePath = FPaths::Combine(InRepositoryRoot, TEXT(".git"), TEXT("lfs"), TEXT("lockcache.db"));
+			IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+			if (PlatformFile.FileExists(*LockCachePath))
+			{
+				UE_LOG(LogSourceControl, Warning, TEXT("GitSourceControl: Corrupt LFS lockcache.db detected, deleting and retrying command '%s'."), *InCommand);
+				PlatformFile.DeleteFile(*LockCachePath);
+			}
+			else
+			{
+				UE_LOG(LogSourceControl, Warning, TEXT("GitSourceControl: LFS lockcache.db error but file missing, retrying command '%s'."), *InCommand);
+			}
+
+			// Clear previous error output and retry once
+			OutResults.Reset();
+			OutErrorMessages.Reset();
+			bSuccess = GitSourceControlUtils::RunCommand(Command, LFSLockBinary, InRepositoryRoot, InParameters, InFiles, OutResults, OutErrorMessages);
+		}
+	}
+
+	return bSuccess;
 }
 
 // Run a Git "commit" command by batches
