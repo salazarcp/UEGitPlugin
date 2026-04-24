@@ -30,6 +30,7 @@
 #define LOCTEXT_NAMESPACE "GitSourceControl"
 
 TArray<FString> FGitSourceControlModule::EmptyStringArray;
+FGitSourceControlModule* FGitSourceControlModule::Singleton = nullptr;
 
 namespace
 {
@@ -45,6 +46,8 @@ static TSharedRef<IGitSourceControlWorker, ESPMode::ThreadSafe> CreateWorker()
 
 void FGitSourceControlModule::StartupModule()
 {
+	Singleton = this;
+
 	// Register our operations (implemented in GitSourceControlOperations.cpp by subclassing from Engine\Source\Developer\SourceControl\Public\SourceControlOperations.h)
 	GitSourceControlProvider.RegisterWorker( "Connect", FGetGitSourceControlWorker::CreateStatic( &CreateWorker<FGitConnectWorker> ) );
 	// Note: this provider uses the "CheckOut" command only with Git LFS 2 "lock" command, since Git itself has no lock command (all tracked files in the working copy are always already checked-out).
@@ -142,6 +145,8 @@ void FGitSourceControlModule::ShutdownModule()
 	CBAssetMenuExtenderDelegates.RemoveAll([ &ExtenderDelegateHandle = CbdHandle_OnExtendAssetSelectionMenu ]( const FContentBrowserMenuExtender_SelectedAssets& Delegate ) {
 		return Delegate.GetHandle() == ExtenderDelegateHandle;
 	});
+
+	Singleton = nullptr;
 }
 
 void FGitSourceControlModule::SaveSettings()
@@ -156,7 +161,7 @@ void FGitSourceControlModule::SaveSettings()
 
 void FGitSourceControlModule::SetLastErrors(const TArray<FText>& InErrors)
 {
-	FGitSourceControlModule* Module = FModuleManager::GetModulePtr<FGitSourceControlModule>("GitSourceControl");
+	FGitSourceControlModule* Module = FGitSourceControlModule::GetThreadSafe();
 	if (Module)
 	{
 		Module->GetProvider().SetLastErrors(InErrors);
@@ -218,7 +223,7 @@ void FGitSourceControlModule::DiffAgainstOriginBranch( UObject * InObject, const
 {
 	check(InObject);
 
-	const FGitSourceControlModule& GitSourceControl = FModuleManager::GetModuleChecked<FGitSourceControlModule>("GitSourceControl");
+	const FGitSourceControlModule& GitSourceControl = FGitSourceControlModule::Get();
 	const FString& PathToGitBinary = GitSourceControl.AccessSettings().GetBinaryPath();
 	const FString& PathToRepositoryRoot = GitSourceControl.GetProvider().GetPathToRepositoryRoot();
 

@@ -49,10 +49,13 @@ void FGitSourceControlProvider::Init(bool bForceConnection)
 		CheckGitAvailability();
 	}
 
-	UPackage::PackageSavedWithContextEvent.AddStatic(&GitSourceControlUtils::UpdateFileStagingOnSaved);
-	
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-	AssetRegistryModule.Get().OnAssetRenamed().AddStatic(&GitSourceControlUtils::UpdateStateOnAssetRename);	
+	if (!IsRunningCommandlet() && !FApp::IsUnattended())
+	{
+		UPackage::PackageSavedWithContextEvent.AddStatic(&GitSourceControlUtils::UpdateFileStagingOnSaved);
+
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		AssetRegistryModule.Get().OnAssetRenamed().AddStatic(&GitSourceControlUtils::UpdateStateOnAssetRename);
+	}
 
 	// bForceConnection: not used anymore
 }
@@ -117,17 +120,6 @@ void FGitSourceControlProvider::CheckRepositoryStatus()
 
 	TUniqueFunction<void()> InitFunc = [this]()
 	{
-		if (!IsInGameThread())
-		{
-			// Wait until the module interface is valid
-			IModuleInterface* GitModule;
-			do
-			{
-				GitModule = FModuleManager::Get().GetModule("GitSourceControl");
-				FPlatformProcess::Sleep(0.0f);
-			} while (!GitModule);
-		}
-
 		// Get user name & email (of the repository, else from the global Git config)
 		GitSourceControlUtils::GetUserConfig(PathToGitBinary, PathToRepositoryRoot, UserName, UserEmail);
 		
@@ -169,7 +161,10 @@ void FGitSourceControlProvider::CheckRepositoryStatus()
 				{
 					GitSourceControlUtils::UpdateCachedStates(Results);
 				}
-				Runner = new FGitSourceControlRunner();
+				if (!FApp::IsUnattended() && !IsRunningCommandlet())
+				{
+					Runner = new FGitSourceControlRunner();
+				}
 				bGitRepositoryFound = true;
 			};
 			if (FApp::IsUnattended() || IsRunningCommandlet())

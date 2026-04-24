@@ -116,20 +116,16 @@ public:
 	 */
 	static inline FGitSourceControlModule& Get()
 	{
-		return FModuleManager::Get().LoadModuleChecked< FGitSourceControlModule >("GitSourceControl");
+		checkf(Singleton, TEXT("GitSourceControl module accessed before StartupModule or after ShutdownModule"));
+		return *Singleton;
 	}
 
 	static inline FGitSourceControlModule* GetThreadSafe()
 	{
-		IModuleInterface* ModulePtr = FModuleManager::Get().GetModule("GitSourceControl");
-		if (!ModulePtr)
-		{
-			// Main thread should never have this unloaded.
-			check(!IsInGameThread());
-			return nullptr;
-		}
-		return static_cast<FGitSourceControlModule*>(ModulePtr);
+		return Singleton;
 	}
+
+	static FGitSourceControlModule* Singleton;
 
 	/** Set list of error messages that occurred after last git command */
 	static void SetLastErrors(const TArray<FText>& InErrors);

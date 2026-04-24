@@ -20,9 +20,19 @@ FGitSourceControlRunner::~FGitSourceControlRunner()
 {
 	if (Thread)
 	{
-		Thread->Kill();
-		delete StopEvent;
+		bRunThread = false;
+		if (StopEvent)
+		{
+			StopEvent->Trigger();
+		}
+		Thread->WaitForCompletion();
 		delete Thread;
+		Thread = nullptr;
+	}
+	if (StopEvent)
+	{
+		FPlatformProcess::ReturnSynchEventToPool(StopEvent);
+		StopEvent = nullptr;
 	}
 }
 
